@@ -260,7 +260,7 @@ router.get('/db-status', async (req, res) => {
 // ─── POST /api/auth/reset-admin-password (TEMPORARY — remove after use) ──────
 // Secured with a one-time secret key, resets admin password to ADMIN_PASSWORD env var
 router.post('/reset-admin-password', async (req, res) => {
-  const { secret } = req.body;
+  const { secret, newPassword: explicitPassword } = req.body;
   const RESET_SECRET = process.env.RESET_SECRET || 'reset_toolcase_2026';
 
   if (secret !== RESET_SECRET) {
@@ -269,7 +269,8 @@ router.post('/reset-admin-password', async (req, res) => {
 
   try {
     const adminEmail = (process.env.ADMIN_EMAIL || 'akhilthadaka97@gmail.com').toLowerCase();
-    const newPassword = process.env.ADMIN_PASSWORD || 'Akhil@7777';
+    // Use explicit password from body, or fall back to env var, or hardcoded default
+    const newPassword = explicitPassword || process.env.ADMIN_PASSWORD || 'Akhil@7777';
 
     const salt = await bcrypt.genSalt(10);
     const hash = await bcrypt.hash(newPassword, salt);
@@ -280,18 +281,20 @@ router.post('/reset-admin-password', async (req, res) => {
       { new: true, upsert: true }
     );
 
-    // Verify
+    // Verify the hash matches
     const isMatch = await bcrypt.compare(newPassword, admin.password);
     res.json({
       success: true,
       email: admin.email,
       passwordVerified: isMatch,
-      message: `Password reset to ADMIN_PASSWORD env var for ${admin.email}`
+      passwordUsed: newPassword,  // show what was set (remove after debugging)
+      message: `Password reset for ${admin.email}`
     });
   } catch (err) {
     console.error('Reset error:', err.message);
     res.status(500).json({ message: 'Reset failed: ' + err.message });
   }
 });
+
 
 module.exports = router;
