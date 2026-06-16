@@ -296,7 +296,7 @@ const seedDatabase = async () => {
 };
 
 // Start Server
-const PORT = process.env.PORT || 5000;
+const PORT = parseInt(process.env.PORT, 10) || 5000;
 const startServer = async () => {
   // 1. Connect database (PostgreSQL Neon)
   await connectDB();
