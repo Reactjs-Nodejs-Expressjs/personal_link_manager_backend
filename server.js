@@ -164,7 +164,7 @@ const seedDatabase = async () => {
     
     // 1. Seed Admin into MongoDB Atlas if none exist
     const adminEmail = (process.env.ADMIN_EMAIL || 'akhilthadaka97@gmail.com').toLowerCase();
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+    const adminPassword = process.env.ADMIN_PASSWORD || 'Akhil@7777';
     
     let admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
@@ -177,7 +177,12 @@ const seedDatabase = async () => {
       });
       console.log(`[MongoDB] Default admin created: ${adminEmail}`);
     } else {
-      console.log('[MongoDB] Admin user already exists.');
+      // Always sync password so env var changes take effect on redeploy
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(adminPassword, salt);
+      admin.password = hashedPassword;
+      await admin.save();
+      console.log('[MongoDB] Admin password synced from env.');
     }
 
     // 2. Seed Categories if none exist

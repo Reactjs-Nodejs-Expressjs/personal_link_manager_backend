@@ -59,7 +59,7 @@ const sendOTPEmail = async (email, otp) => {
 };
 
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
-// Step 1: Email submission — sends OTP
+// Step 1: Email submission — sends OTP (PREFERRED method)
 router.post('/login', async (req, res) => {
   const { email } = req.body;
 
@@ -95,6 +95,61 @@ router.post('/login', async (req, res) => {
     });
   } catch (err) {
     console.error('Login error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ─── POST /api/auth/login-password ───────────────────────────────────────────
+// Alternative: Direct email + password login — returns JWT immediately
+router.post('/login-password', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Please enter both email and password' });
+    }
+
+    // Find admin by email in MongoDB Atlas
+    const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
+    if (!admin) {
+      return res.status(400).json({ message: 'Invalid email or password' });
+    }
+
+    // Compare password
+    const isMatch = await bcrypt.compare(password, admin.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid email or password' });
+    }
+
+    // Update lastLogin
+    admin.lastLogin = new Date();
+    await admin.save();
+
+    // Sign JWT
+    const payload = {
+      id: admin._id.toString(),
+      email: admin.email,
+      role: admin.role
+    };
+
+    jwt.sign(
+      payload,
+      process.env.JWT_SECRET || 'supersecretjwtkey12345_case_tool_mgmt',
+      { expiresIn: '24h' },
+      (err, token) => {
+        if (err) throw err;
+        res.json({
+          token,
+          admin: {
+            id: admin._id.toString(),
+            email: admin.email,
+            role: admin.role
+          }
+        });
+      }
+    );
+  } catch (err) {
+    console.error('Password login error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
