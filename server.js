@@ -3,8 +3,10 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
 const path = require('path');
-const { connectDB } = require('./config/db');
+const { connectDB } = require('./config/db');         // PostgreSQL (Neon)
+const { connectMongoDB } = require('./config/mongodb'); // MongoDB Atlas (auth)
 const dbStore = require('./models/dbStore');
+const Admin = require('./models/Admin');               // MongoDB Admin model
 
 // Load environment variables
 dotenv.config();
@@ -144,6 +146,12 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/categories', require('./routes/category'));
 app.use('/api/cards', require('./routes/card'));
 
+// Lightweight keep-alive endpoint — no DB query needed
+app.get('/api/ping', (req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+
 // Serve static assets in production (optional placeholder)
 app.get('/', (req, res) => {
   res.json({ message: 'Welcome to Case Tool Category Management API', fallbackDB: dbStore.isFallback() });
@@ -154,22 +162,22 @@ const seedDatabase = async () => {
   try {
     console.log('Checking database status to perform seeding...');
     
-    // 1. Seed Admin if none exist
-    const adminEmail = process.env.ADMIN_EMAIL || 'akhilthadaka97@gmail.com';
+    // 1. Seed Admin into MongoDB Atlas if none exist
+    const adminEmail = (process.env.ADMIN_EMAIL || 'akhilthadaka97@gmail.com').toLowerCase();
     const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
     
-    let admin = await dbStore.admins.findOne({ email: adminEmail });
+    let admin = await Admin.findOne({ email: adminEmail });
     if (!admin) {
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(adminPassword, salt);
-      admin = await dbStore.admins.create({
+      admin = await Admin.create({
         email: adminEmail,
         password: hashedPassword,
         role: 'admin'
       });
-      console.log(`Default admin created: ${adminEmail} (password: ${adminPassword})`);
+      console.log(`[MongoDB] Default admin created: ${adminEmail}`);
     } else {
-      console.log('Admin user already exists.');
+      console.log('[MongoDB] Admin user already exists.');
     }
 
     // 2. Seed Categories if none exist
@@ -298,16 +306,19 @@ const seedDatabase = async () => {
 // Start Server
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 const startServer = async () => {
-  // 1. Connect database (PostgreSQL Neon)
+  // 1. Connect PostgreSQL (Neon) — cards & categories
   await connectDB();
+
+  // 2. Connect MongoDB Atlas — authentication
+  await connectMongoDB();
   
-  // Initialize SQL tables
+  // Initialize PostgreSQL tables
   await dbStore.init();
   
-  // 2. Perform Seeding
+  // 3. Seed default data
   await seedDatabase();
 
-  // 3. Listen
+  // 4. Listen
   app.listen(PORT, () => {
     console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
   });

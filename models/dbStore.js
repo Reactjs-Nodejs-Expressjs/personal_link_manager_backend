@@ -358,23 +358,24 @@ const dbStore = {
         baseSql += ` AND c.title ILIKE $${pIdx++}`;
         params.push(`%${query.title}%`);
       }
-      
-      // Count total
-      const countRes = await pool.query(`SELECT COUNT(*) ${baseSql}`, params);
-      const total = parseInt(countRes.rows[0].count, 10);
-      
-      // Select paginated and sorted results
-      let sql = `
+
+      const selectSql = `
         SELECT c.*, 
                cat.name as category_name, 
                sub.name as sub_category_name, 
                subsub.name as sub_sub_category_name
         ${baseSql}
         ORDER BY c.created_at DESC
-        LIMIT $${pIdx++} OFFSET $${pIdx++}
+        LIMIT $${pIdx} OFFSET $${pIdx + 1}
       `;
       
-      const res = await pool.query(sql, [...params, limit, skip]);
+      // Run COUNT and SELECT in parallel — cuts round-trip time in half
+      const [countRes, res] = await Promise.all([
+        pool.query(`SELECT COUNT(*) ${baseSql}`, params),
+        pool.query(selectSql, [...params, limit, skip])
+      ]);
+
+      const total = parseInt(countRes.rows[0].count, 10);
       
       return {
         cards: res.rows.map(mapCard),

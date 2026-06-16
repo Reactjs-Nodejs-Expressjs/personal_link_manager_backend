@@ -1,9 +1,9 @@
 const jwt = require('jsonwebtoken');
-const dbStore = require('../models/dbStore');
+const Admin = require('../models/Admin');  // ← MongoDB Atlas model
 
 module.exports = async (req, res, next) => {
   try {
-    // Get token from header
+    // Get token from Authorization header
     const authHeader = req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ message: 'No authentication token, authorization denied' });
@@ -14,22 +14,25 @@ module.exports = async (req, res, next) => {
       return res.status(401).json({ message: 'No authentication token, authorization denied' });
     }
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'supersecretjwtkey12345_case_tool_mgmt');
-    
-    // Check if admin exists in database
-    const admin = await dbStore.admins.findOne({ _id: decoded.id });
+    // Verify and decode JWT
+    const decoded = jwt.verify(
+      token,
+      process.env.JWT_SECRET || 'supersecretjwtkey12345_case_tool_mgmt'
+    );
+
+    // Validate admin still exists in MongoDB Atlas
+    const admin = await Admin.findById(decoded.id).select('-password -otp -otpExpiry');
     if (!admin) {
-      return res.status(401).json({ message: 'User token is invalid, user not found' });
+      return res.status(401).json({ message: 'User token is invalid, admin not found' });
     }
 
-    // Attach user to request
+    // Attach admin info to request
     req.admin = {
-      id: admin._id,
+      id: admin._id.toString(),
       email: admin.email,
       role: admin.role
     };
-    
+
     next();
   } catch (error) {
     console.error('Auth middleware error:', error.message);

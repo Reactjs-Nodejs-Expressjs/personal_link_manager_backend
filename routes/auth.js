@@ -3,10 +3,10 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-const dbStore = require('../models/dbStore');
+const Admin = require('../models/Admin');       // ← MongoDB Atlas model
 const auth = require('../middleware/auth');
 
-// SMTP email delivery client with terminal simulator logging fallback
+// ─── SMTP / OTP Email Helper ─────────────────────────────────────────────────
 const sendOTPEmail = async (email, otp) => {
   const host = process.env.SMTP_HOST;
   const port = process.env.SMTP_PORT || 587;
@@ -21,10 +21,7 @@ const sendOTPEmail = async (email, otp) => {
         host,
         port: parseInt(port, 10),
         secure: parseInt(port, 10) === 465,
-        auth: {
-          user,
-          pass
-        }
+        auth: { user, pass }
       });
 
       const mailOptions = {
@@ -51,7 +48,7 @@ const sendOTPEmail = async (email, otp) => {
     }
   }
 
-  // Fallback console logging simulator
+  // Fallback: print OTP to backend console
   console.log('\n============================================================');
   console.log(`[OTP SIMULATOR] EMAIL SECURITY VERIFICATION CODE`);
   console.log(`Recipient: ${email}`);
@@ -61,9 +58,8 @@ const sendOTPEmail = async (email, otp) => {
   return false;
 };
 
-// @route   POST api/auth/login
-// @desc    Admin login - Step 1: Email submission (Passwordless)
-// @access  Public
+// ─── POST /api/auth/login ─────────────────────────────────────────────────────
+// Step 1: Email submission — sends OTP
 router.post('/login', async (req, res) => {
   const { email } = req.body;
 
@@ -72,27 +68,29 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Please enter your email address' });
     }
 
-    // Find admin by email
-    const admin = await dbStore.admins.findOne({ email });
+    // Find admin by email in MongoDB Atlas
+    const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) {
       return res.status(400).json({ message: 'This email is not registered as an administrator.' });
     }
 
-    // Generate numeric 6-digit OTP code
+    // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+    const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 min
 
-    // Save OTP verification details to admin record
-    await dbStore.admins.findByIdAndUpdate(admin._id, { otp, otpExpiry });
+    // Persist OTP to MongoDB
+    admin.otp = otp;
+    admin.otpExpiry = otpExpiry;
+    await admin.save();
 
-    // Send OTP code
+    // Send OTP email (or log to console)
     const wasEmailed = await sendOTPEmail(admin.email, otp);
 
     res.json({
       otpRequired: true,
       email: admin.email,
-      message: wasEmailed 
-        ? 'A 6-digit verification code was sent to your email.' 
+      message: wasEmailed
+        ? 'A 6-digit verification code was sent to your email.'
         : 'Verification code generated (check the backend server logs).'
     });
   } catch (err) {
@@ -101,9 +99,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// @route   POST api/auth/verify-otp
-// @desc    Admin login - Step 2: OTP verification
-// @access  Public
+// ─── POST /api/auth/verify-otp ────────────────────────────────────────────────
+// Step 2: OTP verification — returns JWT
 router.post('/verify-otp', async (req, res) => {
   const { email, otp } = req.body;
 
@@ -112,33 +109,31 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ message: 'Please enter all fields' });
     }
 
-    // Fetch admin by email
-    const admin = await dbStore.admins.findOne({ email });
+    // Fetch admin from MongoDB
+    const admin = await Admin.findOne({ email: email.toLowerCase().trim() });
     if (!admin) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    // Validate OTP existence and match
+    // Validate OTP
     if (!admin.otp || admin.otp !== otp) {
       return res.status(400).json({ message: 'Invalid OTP code' });
     }
 
-    // Check expiration timestamp
-    const expiryDate = new Date(admin.otpExpiry);
-    if (expiryDate.getTime() < Date.now()) {
+    // Check expiry
+    if (new Date(admin.otpExpiry).getTime() < Date.now()) {
       return res.status(400).json({ message: 'Verification code has expired' });
     }
 
-    // Clear OTP database details and update lastLogin
-    await dbStore.admins.findByIdAndUpdate(admin._id, { 
-      otp: null, 
-      otpExpiry: null, 
-      lastLogin: new Date() 
-    });
+    // Clear OTP + set lastLogin
+    admin.otp = null;
+    admin.otpExpiry = null;
+    admin.lastLogin = new Date();
+    await admin.save();
 
-    // Create JWT signing payload (24h expiry)
+    // Sign JWT
     const payload = {
-      id: admin._id,
+      id: admin._id.toString(),
       email: admin.email,
       role: admin.role
     };
@@ -152,7 +147,7 @@ router.post('/verify-otp', async (req, res) => {
         res.json({
           token,
           admin: {
-            id: admin._id,
+            id: admin._id.toString(),
             email: admin.email,
             role: admin.role
           }
@@ -165,9 +160,8 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// @route   GET api/auth/verify
-// @desc    Verify admin token
-// @access  Private
+// ─── GET /api/auth/verify ─────────────────────────────────────────────────────
+// Verify JWT token validity
 router.get('/verify', auth, (req, res) => {
   res.json({
     valid: true,
@@ -175,23 +169,37 @@ router.get('/verify', auth, (req, res) => {
   });
 });
 
-// @route   GET api/auth/db-status
-// @desc    Get PostgreSQL database active status
-// @access  Public
+// ─── GET /api/auth/db-status ──────────────────────────────────────────────────
+// Health check: both PostgreSQL (Neon) + MongoDB Atlas status
 router.get('/db-status', async (req, res) => {
+  const status = { postgres: false, mongodb: false };
+
+  // Check PostgreSQL
   try {
     const { getPool } = require('../config/db');
     const pool = getPool();
-    if (!pool) {
-      return res.json({ active: false });
+    if (pool) {
+      await pool.query('SELECT 1');
+      status.postgres = true;
     }
-    // Simple query to verify DB pool is online
-    await pool.query('SELECT 1');
-    res.json({ active: true });
   } catch (err) {
-    console.error('Database health check error:', err.message);
-    res.json({ active: false });
+    console.error('PostgreSQL health check error:', err.message);
   }
+
+  // Check MongoDB
+  try {
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState === 1) {
+      status.mongodb = true;
+    }
+  } catch (err) {
+    console.error('MongoDB health check error:', err.message);
+  }
+
+  res.json({
+    active: status.postgres || status.mongodb,
+    ...status
+  });
 });
 
 module.exports = router;
