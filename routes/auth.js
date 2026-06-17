@@ -6,57 +6,73 @@ const nodemailer = require('nodemailer');
 const Admin = require('../models/Admin');       // ← MongoDB Atlas model
 const auth = require('../middleware/auth');
 
-// ─── SMTP / OTP Email Helper ─────────────────────────────────────────────────
-const sendOTPEmail = async (email, otp) => {
+// ─── SMTP Transporter (cached at module level — reuses TCP connection) ────────
+let _transporter = null;
+
+const getTransporter = () => {
   const host = process.env.SMTP_HOST;
-  const port = process.env.SMTP_PORT || 587;
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
-  const isSMTPConfigured = host && user && pass;
+  if (!host || !user || !pass) return null;
 
-  if (isSMTPConfigured) {
+  if (!_transporter) {
+    _transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass },
+      pool: true,            // Keep connection pool alive
+      maxConnections: 3,
+      socketTimeout: 10000,  // 10s socket timeout
+      connectionTimeout: 8000,
+    });
+    console.log('[SMTP] Transporter initialized (pooled).');
+  }
+  return _transporter;
+};
+
+// ─── OTP Email Sender ─────────────────────────────────────────────────────────
+const sendOTPEmail = async (email, otp) => {
+  const transporter = getTransporter();
+  const user = process.env.SMTP_USER;
+
+  if (transporter) {
     try {
-      const transporter = nodemailer.createTransport({
-        host,
-        port: parseInt(port, 10),
-        secure: parseInt(port, 10) === 465,
-        auth: { user, pass }
-      });
-
-      const mailOptions = {
-        from: `"ToolCase Dashboard Security" <${user}>`,
+      await transporter.sendMail({
+        from: `"ToolCase Security" <${user}>`,
         to: email,
-        subject: 'Admin Security Verification OTP',
+        subject: 'Admin Login OTP',
         html: `
-          <div style="font-family: sans-serif; padding: 24px; max-width: 600px; border: 1px solid #e2e8f0; border-radius: 16px; background-color: #ffffff;">
-            <h2 style="color: #0f172a; margin-top: 0; font-size: 20px;">Admin Login Code</h2>
-            <p style="color: #475569; font-size: 14px; line-height: 1.5;">You are attempting to verify access to the Admin Dashboard. Enter the code below to complete sign-in:</p>
-            <div style="margin: 28px 0; padding: 20px; background-color: #f8fafc; border-radius: 12px; text-align: center; border: 1px solid #e2e8f0;">
-              <span style="font-size: 36px; font-weight: 800; letter-spacing: 8px; color: #f97316; font-family: monospace;">${otp}</span>
+          <div style="font-family:sans-serif;padding:24px;max-width:560px;border:1px solid #e2e8f0;border-radius:16px;background:#fff;">
+            <h2 style="color:#0f172a;margin-top:0;font-size:20px;">Admin Login Code</h2>
+            <p style="color:#475569;font-size:14px;line-height:1.5;">Enter the code below to sign in to the Admin Dashboard:</p>
+            <div style="margin:24px 0;padding:18px;background:#f8fafc;border-radius:12px;text-align:center;border:1px solid #e2e8f0;">
+              <span style="font-size:38px;font-weight:800;letter-spacing:10px;color:#f97316;font-family:monospace;">${otp}</span>
             </div>
-            <p style="color: #64748b; font-size: 11px; margin-bottom: 0;">This code will expire in <strong>5 minutes</strong>. If you did not initiate this login, please update your account password immediately.</p>
+            <p style="color:#64748b;font-size:11px;margin:0;">Expires in <strong>5 minutes</strong>. If you didn't request this, ignore this email.</p>
           </div>
         `
-      };
-
-      await transporter.sendMail(mailOptions);
-      console.log(`[SMTP] Verification email sent successfully to ${email}`);
+      });
+      console.log(`[SMTP] OTP email sent to ${email}`);
       return true;
-    } catch (error) {
-      console.error(`[SMTP ERROR] Failed to send email to ${email}:`, error.message);
+    } catch (err) {
+      console.error(`[SMTP ERROR] ${err.message}`);
+      // Reset transporter on error so it's rebuilt next call
+      _transporter = null;
     }
   }
 
-  // Fallback: print OTP to backend console
-  console.log('\n============================================================');
-  console.log(`[OTP SIMULATOR] EMAIL SECURITY VERIFICATION CODE`);
-  console.log(`Recipient: ${email}`);
-  console.log(`OTP Code : ${otp}`);
-  console.log(`Expiry   : 5 minutes`);
-  console.log('============================================================\n');
+  // Fallback: print to console
+  console.log('\n============================');
+  console.log(`[OTP] Recipient : ${email}`);
+  console.log(`[OTP] Code      : ${otp}`);
+  console.log(`[OTP] Expires   : 5 minutes`);
+  console.log('============================\n');
   return false;
 };
+
 
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
 // Step 1: Email submission — sends OTP (PREFERRED method)
@@ -83,21 +99,24 @@ router.post('/login', async (req, res) => {
     admin.otpExpiry = otpExpiry;
     await admin.save();
 
-    // Send OTP email (or log to console)
-    const wasEmailed = await sendOTPEmail(admin.email, otp);
-
+    // ✅ Respond IMMEDIATELY — don't wait for email to send
     res.json({
       otpRequired: true,
       email: admin.email,
-      message: wasEmailed
-        ? 'A 6-digit verification code was sent to your email.'
-        : 'Verification code generated (check the backend server logs).'
+      message: 'A 6-digit verification code was sent to your email.'
     });
+
+    // 🔥 Send email fire-and-forget in background (doesn't block response)
+    sendOTPEmail(admin.email, otp).catch(err =>
+      console.error('[OTP Email] Background send failed:', err.message)
+    );
+
   } catch (err) {
     console.error('Login error:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
+
 
 // ─── POST /api/auth/login-password ───────────────────────────────────────────
 // Alternative: Direct email + password login — returns JWT immediately
