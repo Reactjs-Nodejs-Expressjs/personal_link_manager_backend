@@ -274,8 +274,10 @@ const seedDatabase = async () => {
 
             // Create a sample card under this subsubcategory
             const slug = subSubName.toLowerCase().replace(/\s+/g, '-');
-            const port = process.env.PORT || 5000;
-            const embedUrl = `http://localhost:${port}/embed/tool/${slug}`;
+            const baseUrl = process.env.RENDER_EXTERNAL_URL
+              ? process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '')
+              : `http://localhost:${process.env.PORT || 5000}`;
+            const embedUrl = `${baseUrl}/embed/tool/${slug}`;
             
             await dbStore.cards.create({
               title: `Premium ${subSubName}`,
