@@ -172,6 +172,10 @@ const dbStore = {
       const params = [id];
       let pIdx = 2;
       
+      if (updateData.password !== undefined) {
+        fields.push(`password = $${pIdx++}`);
+        params.push(updateData.password);
+      }
       if (updateData.lastLogin !== undefined) {
         fields.push(`last_login = $${pIdx++}`);
         params.push(updateData.lastLogin);
@@ -185,7 +189,7 @@ const dbStore = {
         params.push(updateData.otpExpiry);
       }
       
-      if (fields.length === 0) return await dbStore.admins.findOne({ id });
+      if (fields.length === 0) return await dbStore.admins.findOne({ _id: id });
       
       const sql = `
         UPDATE admins 

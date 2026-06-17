@@ -3,10 +3,8 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
 const path = require('path');
-const { connectDB } = require('./config/db');         // PostgreSQL (Neon)
-const { connectMongoDB } = require('./config/mongodb'); // MongoDB Atlas (auth)
+const { connectDB } = require('./config/db');   // PostgreSQL (Neon) — single DB for everything
 const dbStore = require('./models/dbStore');
-const Admin = require('./models/Admin');               // MongoDB Admin model
 
 // Load environment variables
 dotenv.config();
@@ -161,28 +159,26 @@ app.get('/', (req, res) => {
 const seedDatabase = async () => {
   try {
     console.log('Checking database status to perform seeding...');
-    
-    // 1. Seed Admin into MongoDB Atlas if none exist
+
+    // 1. Seed Admin into PostgreSQL (Neon) if not exists
     const adminEmail = (process.env.ADMIN_EMAIL || 'akhilthadaka97@gmail.com').toLowerCase();
     const adminPassword = process.env.ADMIN_PASSWORD || 'Akhil@7777';
-    
-    let admin = await Admin.findOne({ email: adminEmail });
+
+    let admin = await dbStore.admins.findOne({ email: adminEmail });
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(adminPassword, salt);
+
     if (!admin) {
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(adminPassword, salt);
-      admin = await Admin.create({
+      admin = await dbStore.admins.create({
         email: adminEmail,
         password: hashedPassword,
         role: 'admin'
       });
-      console.log(`[MongoDB] Default admin created: ${adminEmail}`);
+      console.log(`[PostgreSQL] Default admin created: ${adminEmail}`);
     } else {
-      // Always sync password so env var changes take effect on redeploy
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(adminPassword, salt);
-      admin.password = hashedPassword;
-      await admin.save();
-      console.log('[MongoDB] Admin password synced from env.');
+      // Always sync password from env so changes take effect on redeploy
+      await dbStore.admins.findByIdAndUpdate(admin._id, { password: hashedPassword });
+      console.log('[PostgreSQL] Admin password synced from env.');
     }
 
     // 2. Seed Categories if none exist
@@ -313,16 +309,13 @@ const seedDatabase = async () => {
 // Start Server
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 const startServer = async () => {
-  // 1. Connect PostgreSQL (Neon) — cards & categories
+  // 1. Connect PostgreSQL (Neon) — single DB for all data + auth
   await connectDB();
 
-  // 2. Connect MongoDB Atlas — authentication
-  await connectMongoDB();
-  
-  // Initialize PostgreSQL tables
+  // 2. Initialize PostgreSQL tables (admins, categories, cards)
   await dbStore.init();
-  
-  // 3. Seed default data
+
+  // 3. Seed default admin + demo data
   await seedDatabase();
 
   // 4. Listen
