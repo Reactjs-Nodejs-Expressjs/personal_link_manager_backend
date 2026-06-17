@@ -6,72 +6,76 @@ const nodemailer = require('nodemailer');
 const Admin = require('../models/Admin');       // ← MongoDB Atlas model
 const auth = require('../middleware/auth');
 
-// ─── SMTP Transporter (cached at module level — reuses TCP connection) ────────
-let _transporter = null;
+// ─── OTP Email Sender (fixed for Gmail on cloud servers) ─────────────────────
+const sendOTPEmail = async (toEmail, otp) => {
+  const host    = process.env.SMTP_HOST;
+  const port    = parseInt(process.env.SMTP_PORT || '587', 10);
+  const user    = process.env.SMTP_USER;
+  // Strip spaces — Gmail app passwords are 16 chars, shown with spaces for readability
+  const pass    = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
 
-const getTransporter = () => {
-  const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT || '587', 10);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  if (!host || !user || !pass) {
+    // ── Fallback: print to console (Render logs) ──
+    console.log('\n============================');
+    console.log('[OTP] SMTP not configured — code printed here:');
+    console.log(`[OTP] Recipient : ${toEmail}`);
+    console.log(`[OTP] Code      : ${otp}`);
+    console.log(`[OTP] Expires   : 5 minutes`);
+    console.log('============================\n');
+    return false;
+  }
 
-  if (!host || !user || !pass) return null;
-
-  if (!_transporter) {
-    _transporter = nodemailer.createTransport({
+  try {
+    // Create a fresh transporter each send — most reliable on serverless/cloud cold starts
+    const transporter = nodemailer.createTransport({
       host,
       port,
-      secure: port === 465,
+      secure: port === 465,        // true for 465 (SSL), false for 587 (STARTTLS)
+      requireTLS: port !== 465,    // ← CRITICAL for Gmail on cloud (forces STARTTLS upgrade)
       auth: { user, pass },
-      pool: true,            // Keep connection pool alive
-      maxConnections: 3,
-      socketTimeout: 10000,  // 10s socket timeout
-      connectionTimeout: 8000,
+      tls: {
+        rejectUnauthorized: true,  // enforce valid cert
+        minVersion: 'TLSv1.2',
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
     });
-    console.log('[SMTP] Transporter initialized (pooled).');
-  }
-  return _transporter;
-};
 
-// ─── OTP Email Sender ─────────────────────────────────────────────────────────
-const sendOTPEmail = async (email, otp) => {
-  const transporter = getTransporter();
-  const user = process.env.SMTP_USER;
-
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: `"ToolCase Security" <${user}>`,
-        to: email,
-        subject: 'Admin Login OTP',
-        html: `
-          <div style="font-family:sans-serif;padding:24px;max-width:560px;border:1px solid #e2e8f0;border-radius:16px;background:#fff;">
-            <h2 style="color:#0f172a;margin-top:0;font-size:20px;">Admin Login Code</h2>
-            <p style="color:#475569;font-size:14px;line-height:1.5;">Enter the code below to sign in to the Admin Dashboard:</p>
-            <div style="margin:24px 0;padding:18px;background:#f8fafc;border-radius:12px;text-align:center;border:1px solid #e2e8f0;">
-              <span style="font-size:38px;font-weight:800;letter-spacing:10px;color:#f97316;font-family:monospace;">${otp}</span>
-            </div>
-            <p style="color:#64748b;font-size:11px;margin:0;">Expires in <strong>5 minutes</strong>. If you didn't request this, ignore this email.</p>
+    await transporter.sendMail({
+      from: `"ToolCase Admin" <${user}>`,
+      to: toEmail,
+      subject: '🔐 Your Admin Login OTP',
+      html: `
+        <div style="font-family:sans-serif;padding:28px;max-width:540px;border:1px solid #e2e8f0;border-radius:16px;background:#ffffff;">
+          <h2 style="color:#0f172a;margin:0 0 8px;font-size:20px;">Admin Login Code</h2>
+          <p style="color:#475569;font-size:14px;line-height:1.6;margin:0 0 20px;">
+            Enter this code to sign in to the ToolCase Admin Dashboard:
+          </p>
+          <div style="margin:0 0 24px;padding:20px;background:#f8fafc;border-radius:12px;text-align:center;border:1px solid #e2e8f0;">
+            <span style="font-size:40px;font-weight:900;letter-spacing:12px;color:#f97316;font-family:monospace;">${otp}</span>
           </div>
-        `
-      });
-      console.log(`[SMTP] OTP email sent to ${email}`);
-      return true;
-    } catch (err) {
-      console.error(`[SMTP ERROR] ${err.message}`);
-      // Reset transporter on error so it's rebuilt next call
-      _transporter = null;
-    }
-  }
+          <p style="color:#94a3b8;font-size:11px;margin:0;">
+            ⏱ Expires in <strong>5 minutes</strong>. If you didn't request this, ignore this email.
+          </p>
+        </div>
+      `
+    });
 
-  // Fallback: print to console
-  console.log('\n============================');
-  console.log(`[OTP] Recipient : ${email}`);
-  console.log(`[OTP] Code      : ${otp}`);
-  console.log(`[OTP] Expires   : 5 minutes`);
-  console.log('============================\n');
-  return false;
+    console.log(`[SMTP] ✅ OTP email sent successfully to ${toEmail}`);
+    return true;
+
+  } catch (err) {
+    console.error(`[SMTP] ❌ Failed to send OTP to ${toEmail}`);
+    console.error(`[SMTP]    Error code   : ${err.code || 'N/A'}`);
+    console.error(`[SMTP]    Error message: ${err.message}`);
+    console.error(`[SMTP]    Response     : ${err.response || 'N/A'}`);
+    // Fallback — print code to Render logs so admin can still login
+    console.log(`[OTP FALLBACK] Code for ${toEmail}: ${otp}`);
+    return false;
+  }
 };
+
 
 
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
