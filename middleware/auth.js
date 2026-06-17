@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const Admin = require('../models/Admin');  // ← MongoDB Atlas model
+const dbStore = require('../models/dbStore');  // ← PostgreSQL (Neon) store
 
 module.exports = async (req, res, next) => {
   try {
@@ -20,8 +20,8 @@ module.exports = async (req, res, next) => {
       process.env.JWT_SECRET || 'supersecretjwtkey12345_case_tool_mgmt'
     );
 
-    // Validate admin still exists in MongoDB Atlas
-    const admin = await Admin.findById(decoded.id).select('-password -otp -otpExpiry');
+    // Validate admin still exists in PostgreSQL database
+    const admin = await dbStore.admins.findOne({ id: decoded.id });
     if (!admin) {
       return res.status(401).json({ message: 'User token is invalid, admin not found' });
     }
